@@ -1,0 +1,21 @@
+**************************************
+* dcc                                *
+* author: Uwe Naumann                *
+* email: naumann@stce.rwth-aachen.de *
+**************************************
+
+++++++++++++
+How to build
+++++++++++++
+
+./configure --prefix [install_dir]
+./make
+./make check
+./make install
+
+VPATH builds are only partially supported
+(make check fails).
+
+++++++++++
+How to use
+++++++++++

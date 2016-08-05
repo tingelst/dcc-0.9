@@ -1,0 +1,675 @@
+%{
+
+#include <sstream>
+#include <assert.h>
+#include <iostream>
+#include "ast.hpp"
+#include "symbol_table.hpp"
+
+static int array_index_t=0;
+static int array_dimension=0;
+
+extern int yylex();
+extern int yyerror(const char*);
+extern void lexinit(FILE*);
+extern int line_srcfile;
+extern char* yytext;
+
+extern ast the_ast;
+extern string sac_var_prefix;
+
+static int clv_ctr=0;
+static bool in_rhs=false;
+ast_vertex* declarations_astv;
+symbol_table *global_stab, *local_stab, *current_stab;
+
+void new_sac_var(expr_ast_vertex* v, int c) {
+  v->clv_idx=c;
+  ostringstream clv_name;
+  clv_name << sac_var_prefix << c;
+  list<symbol*>::iterator i;
+  bool n=true;
+  for (i=local_stab->tab.begin();i!=local_stab->tab.end();i++)
+    if ((*i)->name==clv_name.str()) {
+      n=false; break;
+    }
+  if (n) {
+    symbol* s=current_stab->insert(clv_name.str());
+    s->kind=AUX_VAR_SK;
+    s->type=FLOAT_ST;
+    s->shape=0;
+    s->val="0";
+    ast_vertex* ns=new symbol_ast_vertex;
+    ns->type=SYMBOL_ASTV;
+    static_cast<symbol_ast_vertex*>(ns)->sym=s;
+    declarations_astv->children.push_back(ns);
+  }
+}
+
+symbol* find_symbol(const string& name) {
+  list<symbol*>::iterator i;
+  // local variables
+  for (i=local_stab->tab.begin();i!=local_stab->tab.end();i++)
+    if ((*i)->name==name) return *i;
+  // global variables
+  for (i=global_stab->tab.begin();i!=global_stab->tab.end();i++)
+    if ((*i)->name==name) return *i;
+  return 0;
+}
+
+%}
+
+%token SYMBOL CONSTANT 
+%token SIN COS EXP SQRT ATAN POW LOG TAN
+%token IF ELSE WHILE VOID FLOAT INT 
+%token STATIC 
+
+%left '+' '-'
+%left '*' '/'
+
+%%
+
+code : 
+  {
+    global_stab=new symbol_table;
+    current_stab=global_stab;
+  }
+  sequence_of_global_declarations sequence_of_subroutines 
+  {
+    $$=new scope_ast_vertex;
+    static_cast<scope_ast_vertex*>($$)->stab=global_stab;
+    $$->type=CODE_ASTV;
+    $$->children.push_back($2);
+    $2->parent=$$;
+    $$->children.push_back($3);
+    $3->parent=$$;
+    the_ast.ast_root=$$;
+  }
+  ;
+sequence_of_subroutines : subroutine
+  {
+    $$=new ast_vertex;
+    $$->type=SEQUENCE_OF_SUBROUTINES_ASTV;
+    $$->children.push_back($1);
+    $1->parent=$$;
+  }
+  | sequence_of_subroutines subroutine
+  {
+    $1->children.push_back($2);
+    $$=$1;
+    $2->parent=$$;
+  }
+  ;
+subroutine : VOID 
+  {
+    clv_ctr=0;
+    local_stab=new symbol_table;
+    current_stab=local_stab;
+  }
+  SYMBOL '(' list_of_arguments ')' '{' sequence_of_local_declarations sequence_of_statements '}'
+  {
+    symbol* s=current_stab->insert(static_cast<symbol_ast_vertex*>($3)->sym->name);
+    s->kind=SUBROUTINE_NAME_SK;
+    s->type=VOID_ST;
+    s->shape=0;
+    delete static_cast<symbol_ast_vertex*>($3)->sym;
+    static_cast<symbol_ast_vertex*>($3)->sym=s;
+    $$=new scope_ast_vertex;
+    static_cast<scope_ast_vertex*>($$)->stab=local_stab;
+    $$->type=SUBROUTINE_ASTV;
+    $$->children.push_back($3);
+    $$->children.push_back($5);
+    $$->children.push_back($8);
+    $$->children.push_back($9);
+    $3->parent=$$;
+    $5->parent=$$;
+    $8->parent=$$;
+    $9->parent=$$;
+  }
+  ;
+list_of_arguments : argument
+  {
+    $$=new ast_vertex;
+    $$->type=SUBROUTINE_ARG_LIST_ASTV;
+    $$->children.push_back($1);
+    $1->parent=$$;
+  }
+  ;
+  | list_of_arguments ',' argument 
+  {
+    $1->children.push_back($3);
+    $$=$1;
+    $3->parent=$$;
+  }
+  ;
+sequence_of_asterixes : '*'
+  {
+    array_dimension=1;
+  }
+  | sequence_of_asterixes '*' 
+  {
+    array_dimension++;
+  }
+  ;
+argument : INT '&' SYMBOL
+  {
+
+    symbol* s=current_stab->insert(static_cast<symbol_ast_vertex*>($3)->sym->name);
+    s->kind=SUBROUTINE_ARG_SK;
+    s->type=INT_ST;
+    s->shape=0;
+    $$=new symbol_ast_vertex;
+    static_cast<symbol_ast_vertex*>($$)->sym=s;
+    delete $3;
+  }
+  | INT SYMBOL
+  {
+
+    symbol* s=current_stab->insert(static_cast<symbol_ast_vertex*>($2)->sym->name);
+    s->kind=SUBROUTINE_ARG_SK;
+    s->type=INT_ST;
+    s->shape=0;
+    s->intent=1;
+    $$=new symbol_ast_vertex;
+    static_cast<symbol_ast_vertex*>($$)->sym=s;
+    delete $2;
+  }
+  | FLOAT '&' SYMBOL
+  {
+    symbol* s=current_stab->insert(static_cast<symbol_ast_vertex*>($3)->sym->name);
+    s->kind=SUBROUTINE_ARG_SK;
+    s->type=FLOAT_ST;
+    s->shape=0;
+    $$=new symbol_ast_vertex;
+    static_cast<symbol_ast_vertex*>($$)->sym=s;
+    delete $3;
+  }
+  ;
+  | FLOAT sequence_of_asterixes SYMBOL
+  {
+    symbol* s=current_stab->insert(static_cast<symbol_ast_vertex*>($3)->sym->name);
+    s->kind=SUBROUTINE_ARG_SK;
+    s->type=FLOAT_ST;
+    s->shape=array_dimension;
+    $$=new symbol_ast_vertex;
+    static_cast<symbol_ast_vertex*>($$)->sym=s;
+    delete $3;
+  }
+  ;
+  | INT sequence_of_asterixes SYMBOL
+  {
+    symbol* s=current_stab->insert(static_cast<symbol_ast_vertex*>($3)->sym->name);
+    s->kind=SUBROUTINE_ARG_SK;
+    s->type=INT_ST;
+    s->shape=array_dimension;
+    $$=new symbol_ast_vertex;
+    static_cast<symbol_ast_vertex*>($$)->sym=s;
+    delete $3;
+  }
+  ;
+sequence_of_global_declarations : 
+  {
+    $$=new ast_vertex;
+    $$->type=SEQUENCE_OF_DECLARATIONS_ASTV;
+    declarations_astv=$$;
+  }
+  | sequence_of_global_declarations global_declaration 
+  {
+    $1->children.push_back($2);
+    $$=$1;
+    $2->parent=$$;
+  }
+  ;
+sequence_of_local_declarations : 
+  {
+    $$=new ast_vertex;
+    $$->type=SEQUENCE_OF_DECLARATIONS_ASTV;
+    declarations_astv=$$;
+  }
+  | sequence_of_local_declarations local_declaration 
+  {
+    $1->children.push_back($2);
+    $$=$1;
+    $2->parent=$$;
+  }
+  ;
+local_declaration : FLOAT SYMBOL '=' CONSTANT ';'
+  {
+    symbol* s=current_stab->insert(static_cast<symbol_ast_vertex*>($2)->sym->name);
+    s->kind=LOCAL_VAR_SK;
+    s->type=FLOAT_ST;
+    s->shape=0;
+    s->val=static_cast<const_ast_vertex*>($4)->value->name;
+    $$=new symbol_ast_vertex;
+    static_cast<symbol_ast_vertex*>($$)->sym=s;
+    delete $2;
+    delete $4;
+  }
+  | INT SYMBOL '=' CONSTANT ';'
+  {
+    symbol* s=current_stab->insert(static_cast<symbol_ast_vertex*>($2)->sym->name);
+    s->kind=LOCAL_VAR_SK;
+    s->type=INT_ST;
+    s->shape=0;
+    s->val=static_cast<const_ast_vertex*>($4)->value->name;
+    $$=new symbol_ast_vertex;
+    static_cast<symbol_ast_vertex*>($$)->sym=s;
+    delete $2;
+    delete $4;
+  }
+  ;
+global_declaration : INT SYMBOL '=' CONSTANT ';'
+  {
+    symbol* s=current_stab->insert(static_cast<symbol_ast_vertex*>($2)->sym->name);
+    s->kind=GLOBAL_VAR_SK;
+    s->type=INT_ST;
+    s->shape=0;
+    s->val=static_cast<const_ast_vertex*>($4)->value->name;
+    $$=new symbol_ast_vertex;
+    static_cast<symbol_ast_vertex*>($$)->sym=s;
+    delete $2;
+    delete $4;
+  }
+  | INT SYMBOL '[' CONSTANT ']' ';'
+  {
+    symbol* s=current_stab->insert(static_cast<symbol_ast_vertex*>($2)->sym->name);
+    s->kind=GLOBAL_VAR_SK;
+    s->type=INT_ST;
+    s->shape=1;
+    s->val=static_cast<const_ast_vertex*>($4)->value->name;
+    $$=new symbol_ast_vertex;
+    static_cast<symbol_ast_vertex*>($$)->sym=s;
+    delete $2;
+    delete $4;
+  }
+  | FLOAT SYMBOL '=' CONSTANT ';'
+  {
+    symbol* s=current_stab->insert(static_cast<symbol_ast_vertex*>($2)->sym->name);
+    s->kind=GLOBAL_VAR_SK;
+    s->type=FLOAT_ST;
+    s->shape=0;
+    s->val=static_cast<const_ast_vertex*>($4)->value->name;
+    $$=new symbol_ast_vertex;
+    static_cast<symbol_ast_vertex*>($$)->sym=s;
+    delete $2;
+    delete $4;
+  }
+  | FLOAT SYMBOL '[' CONSTANT ']' ';'
+  {
+    symbol* s=current_stab->insert(static_cast<symbol_ast_vertex*>($2)->sym->name);
+    s->kind=GLOBAL_VAR_SK;
+    s->type=FLOAT_ST;
+    s->shape=1;
+    s->val=static_cast<const_ast_vertex*>($4)->value->name;
+    $$=new symbol_ast_vertex;
+    static_cast<symbol_ast_vertex*>($$)->sym=s;
+    delete $2;
+    delete $4;
+  }
+  ;
+sequence_of_statements : statement 
+  { 
+    $$=new ast_vertex;
+    $$->type=SEQUENCE_OF_STATEMENTS_ASTV;
+    $$->children.push_back($1);
+    $1->parent=$$;
+  } 
+  | sequence_of_statements statement 
+  {
+    $1->children.push_back($2);
+    $$=$1;
+    $2->parent=$$;
+  }
+  ;
+statement : assignment { $$=$1; }
+  | if_statement { $$=$1; }
+  | while_statement { $$=$1; }
+  | subroutine_call_statement ';' { $$=$1; }
+  ;
+if_statement : IF '(' condition ')' '{' sequence_of_statements '}' else_branch
+  {
+    $$=new ast_vertex;
+    $$->type=IF_STATEMENT_ASTV;
+    $$->children.push_back($3);
+    $$->children.push_back($6);
+    if ($8) $$->children.push_back($8);
+    $3->parent=$$;
+    $6->parent=$$;
+    if ($8) $8->parent=$$;
+  }
+  ;
+else_branch :
+  {
+    $$=0;
+  }
+  | ELSE '{' sequence_of_statements '}'
+  {
+    $$=$3;
+  }
+  ;
+while_statement : WHILE '(' condition ')' '{' sequence_of_statements '}'
+  {
+    $$=new ast_vertex;
+    $$->type=WHILE_STATEMENT_ASTV;
+    $$->children.push_back($3);
+    $$->children.push_back($6);
+    $3->parent=$$;
+    $6->parent=$$;
+  }
+  ;
+condition : memref_or_constant '<' memref_or_constant
+  {
+    $$=new ast_vertex;
+    $$->type=CONDITION_LT_ASTV;
+    $$->children.push_back($1);
+    $$->children.push_back($3);
+    $1->parent=$$;
+    $3->parent=$$;
+  }
+  | memref_or_constant '>' memref_or_constant
+  {
+    $$=new ast_vertex;
+    $$->type=CONDITION_GT_ASTV;
+    $$->children.push_back($1);
+    $$->children.push_back($3);
+    $1->parent=$$;
+    $3->parent=$$;
+  }
+  | memref_or_constant '=' '=' memref_or_constant
+  {
+    $$=new ast_vertex;
+    $$->type=CONDITION_EQ_ASTV;
+    $$->children.push_back($1);
+    $$->children.push_back($4);
+    $1->parent=$$;
+    $4->parent=$$;
+  }
+  | memref_or_constant '!' '=' memref_or_constant
+  {
+    $$=new ast_vertex;
+    $$->type=CONDITION_NEQ_ASTV;
+    $$->children.push_back($1);
+    $$->children.push_back($4);
+    $1->parent=$$;
+    $4->parent=$$;
+  }
+  | memref_or_constant '>' '=' memref_or_constant
+  {
+    $$=new ast_vertex;
+    $$->type=CONDITION_GE_ASTV;
+    $$->children.push_back($1);
+    $$->children.push_back($4);
+    $1->parent=$$;
+    $4->parent=$$;
+  }
+  | memref_or_constant '<' '=' memref_or_constant
+  {
+    $$=new ast_vertex;
+    $$->type=CONDITION_LE_ASTV;
+    $$->children.push_back($1);
+    $$->children.push_back($4);
+    $1->parent=$$;
+    $4->parent=$$;
+  }
+  ; 
+subroutine_call_statement : SYMBOL '(' list_of_args ')'
+  {
+    $$=new ast_vertex;
+    $$->type=SUBROUTINE_CALL_ASTV;
+    $$->children.push_back($1);
+    $$->children.push_back($3);
+    $1->parent=$$;
+    $3->parent=$$;
+  }
+  ;
+assignment : memref 
+  {
+    clv_ctr=0;
+    in_rhs=true;
+  }
+  '=' expression ';' 
+  { 
+    $$=new ast_vertex;
+    $$->type=ASSIGNMENT_ASTV;
+    $$->children.push_back($1);
+    $$->children.push_back($4);
+    $1->parent=$$;
+    $4->parent=$$;
+    in_rhs=false;
+  }
+  ;
+expression : '(' expression ')'
+  {
+    $$=new expr_ast_vertex;
+    $$->type=PAR_EXPRESSION_ASTV;
+    new_sac_var(static_cast<expr_ast_vertex*>($$),clv_ctr++);
+    $$->children.push_back($2);
+    $2->parent=$$;
+  }
+  | expression '*' expression
+  {
+    $$=new expr_ast_vertex;
+    $$->type=MUL_EXPRESSION_ASTV;
+    new_sac_var(static_cast<expr_ast_vertex*>($$),clv_ctr++);
+    $$->children.push_back($1);
+    $$->children.push_back($3);
+    $1->parent=$$;
+    $3->parent=$$;
+  }
+  | expression '/' expression
+  {
+    $$=new expr_ast_vertex;
+    $$->type=DIV_EXPRESSION_ASTV;
+    new_sac_var(static_cast<expr_ast_vertex*>($$),clv_ctr++);
+    $$->children.push_back($1);
+    $$->children.push_back($3);
+    $1->parent=$$;
+    $3->parent=$$;
+  }
+  | expression '+' expression
+  {
+    $$=new expr_ast_vertex;
+    $$->type=ADD_EXPRESSION_ASTV;
+    new_sac_var(static_cast<expr_ast_vertex*>($$),clv_ctr++);
+    $$->children.push_back($1);
+    $$->children.push_back($3);
+    $1->parent=$$;
+    $3->parent=$$;
+  }
+  | expression '-' expression
+  {
+    $$=new expr_ast_vertex;
+    $$->type=SUB_EXPRESSION_ASTV;
+    new_sac_var(static_cast<expr_ast_vertex*>($$),clv_ctr++);
+    $$->children.push_back($1);
+    $$->children.push_back($3);
+    $1->parent=$$;
+    $3->parent=$$;
+  }
+  | SIN '(' expression ')'
+  {
+    $$=new expr_ast_vertex;
+    $$->type=SIN_EXPRESSION_ASTV;
+    new_sac_var(static_cast<expr_ast_vertex*>($$),clv_ctr++);
+    $$->children.push_back($3);
+    $3->parent=$$;
+  }
+  | COS '(' expression ')'
+  {
+    $$=new expr_ast_vertex;
+    $$->type=COS_EXPRESSION_ASTV;
+    new_sac_var(static_cast<expr_ast_vertex*>($$),clv_ctr++);
+    $$->children.push_back($3);
+    $3->parent=$$;
+  }
+  | EXP '(' expression ')'
+  {
+    $$=new expr_ast_vertex;
+    $$->type=EXP_EXPRESSION_ASTV;
+    new_sac_var(static_cast<expr_ast_vertex*>($$),clv_ctr++);
+    $$->children.push_back($3);
+    $3->parent=$$;
+  }
+  | SQRT '(' expression ')'
+  {
+    $$=new expr_ast_vertex;
+    $$->type=SQRT_EXPRESSION_ASTV;
+    new_sac_var(static_cast<expr_ast_vertex*>($$),clv_ctr++);
+    $$->children.push_back($3);
+    $3->parent=$$;
+  }
+  | TAN '(' expression ')'
+  {
+    $$=new expr_ast_vertex;
+    $$->type=TAN_EXPRESSION_ASTV;
+    new_sac_var(static_cast<expr_ast_vertex*>($$),clv_ctr++);
+    $$->children.push_back($3);
+    $3->parent=$$;
+  }
+  | ATAN '(' expression ')'
+  {
+    $$=new expr_ast_vertex;
+    $$->type=ATAN_EXPRESSION_ASTV;
+    new_sac_var(static_cast<expr_ast_vertex*>($$),clv_ctr++);
+    $$->children.push_back($3);
+    $3->parent=$$;
+  }
+  | LOG '(' expression ')'
+  {
+    $$=new expr_ast_vertex;
+    $$->type=LOG_EXPRESSION_ASTV;
+    new_sac_var(static_cast<expr_ast_vertex*>($$),clv_ctr++);
+    $$->children.push_back($3);
+    $3->parent=$$;
+  }
+  | POW '(' expression ',' SYMBOL ')'
+  {
+    $$=new expr_ast_vertex;
+    if (find_symbol(static_cast<symbol_ast_vertex*>($5)->sym->name)->type==INT_ST)
+      $$->type=POW_I_EXPRESSION_ASTV;
+    else if (find_symbol(static_cast<symbol_ast_vertex*>($5)->sym->name)->type==FLOAT_ST)
+      $$->type=POW_F_EXPRESSION_ASTV;
+    else {
+      cerr << "Incorrect symbol type!" << endl;
+      assert(false);
+    }
+    new_sac_var(static_cast<expr_ast_vertex*>($$),clv_ctr++);
+    $$->children.push_back($3);
+    $$->children.push_back($5);
+    $3->parent=$$;
+    $5->parent=$$;
+  }
+  | memref
+  | CONSTANT
+  {
+    if (in_rhs) new_sac_var(static_cast<expr_ast_vertex*>($1),clv_ctr++);
+    $$=$1;
+  }
+  ;
+list_of_args : memref_or_constant
+  {
+    $$=new ast_vertex;
+    $$->type=SUBROUTINE_CALL_ARG_LIST_ASTV;
+    $$->children.push_back($1);
+    $1->parent=$$;
+  }
+  | memref_or_constant ',' list_of_args
+  {
+    $3->children.push_front($1);
+    $$=$3;
+    $1->parent=$$;
+  }
+  ;
+memref_or_constant : memref
+  | CONSTANT
+  ;
+array_index : SYMBOL
+  {
+    symbol* s=find_symbol(static_cast<symbol_ast_vertex*>($1)->sym->name);
+    assert(s!=0);
+    delete static_cast<symbol_ast_vertex*>($1)->sym;
+    static_cast<symbol_ast_vertex*>($1)->sym=s;
+    $$=$1;
+    array_index_t=SYMBOL_ARRAY_IDX;   
+  }
+  | CONSTANT
+  {
+    $$=$1;
+    array_index_t=CONSTANT_ARRAY_IDX;   
+  }
+  ;
+memref : SYMBOL 
+  {
+    $$=new scalar_memref_ast_vertex;
+    $$->type=SCALAR_MEMREF_ASTV;
+    if (in_rhs) new_sac_var(static_cast<expr_ast_vertex*>($$),clv_ctr++);
+    symbol* s=find_symbol(static_cast<symbol_ast_vertex*>($1)->sym->name);
+    assert(s!=0);
+    static_cast<scalar_memref_ast_vertex*>($$)->base=s;
+    delete $1;
+  }
+  | array_reference 
+  ;
+array_reference : SYMBOL { array_dimension=1; } array_access
+  {
+    $$=$3;
+    symbol* s=find_symbol(static_cast<symbol_ast_vertex*>($1)->sym->name);
+    assert(s!=0);
+    static_cast<scalar_memref_ast_vertex*>($$)->base=s;
+    $$->type=ARRAY_MEMREF_ASTV;
+    if (in_rhs) new_sac_var(static_cast<scalar_memref_ast_vertex*>($$),clv_ctr++);
+    delete $1;
+  }
+  ;
+array_access : '[' array_index ']' 
+  {  
+    $$=new array_memref_ast_vertex(array_dimension);
+    switch (array_index_t) {
+      case SYMBOL_ARRAY_IDX : {
+        static_cast<array_memref_ast_vertex*>($$)->offsets[array_dimension-1]=static_cast<symbol_ast_vertex*>($2)->sym;
+        break;
+      }
+      case CONSTANT_ARRAY_IDX : {
+        static_cast<array_memref_ast_vertex*>($$)->offsets[array_dimension-1]=static_cast<const_ast_vertex*>($2)->value;
+        break;
+      }
+      default : {
+        cerr << "Not implemented ( array index type " << array_index_t << ")" << endl;
+        break;
+      }
+    }
+    delete $2;
+    array_dimension--;
+  }
+  | '[' array_index ']' 
+  {
+    array_dimension++;
+  } 
+  array_access
+  {
+    $$=$5;
+    switch (array_index_t) {
+      case SYMBOL_ARRAY_IDX : {
+        static_cast<array_memref_ast_vertex*>($$)->offsets[array_dimension-1]=static_cast<symbol_ast_vertex*>($2)->sym;
+        break;
+      }
+      case CONSTANT_ARRAY_IDX : {
+        static_cast<array_memref_ast_vertex*>($$)->offsets[array_dimension-1]=static_cast<const_ast_vertex*>($2)->value;
+        break;
+      }
+      default : {
+        cerr << "Not implemented ( array index type " << array_dimension << ")" << endl;
+        break;
+      }
+    }
+    delete $2;
+    array_dimension--;
+  }
+  ;
+
+%%
+
+int yyerror(const char *msg) { 
+  printf("ERROR: %s in line %d of the sourcefile.\nText at position where error occurs: %s\n",msg,line_srcfile,yytext);
+  return -1; 
+}

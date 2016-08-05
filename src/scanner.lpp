@@ -1,0 +1,58 @@
+%{ 
+#include<iostream>
+using namespace std;
+
+#include "symbol_table.hpp"
+#include "ast.hpp"
+#include "parser.h"
+
+int line_srcfile=1;
+%}
+
+whitespace      [ \t\r]+
+linefeed        \n
+int		0|[1-9][0-9]*
+float		{int}"."[0-9]*
+const		{int}|{float}
+symbol		([A-Z]|[a-z])(([A-Z]|[a-z])|_|{int})*
+comment		"//"[^\n]+
+
+%%
+
+{whitespace} 	{}
+{linefeed} 	{ line_srcfile++; }
+{comment} 	{}
+"static" 	{ return STATIC; }
+"double" 	{ return FLOAT; }
+"int" 		{ return INT; }
+"void" 		{ return VOID; }
+"if" 		{ return IF; }
+"else" 		{ return ELSE; }
+"while"		{ return WHILE;	}
+"sin" 		{ return SIN; }
+"cos" 		{ return COS; }
+"exp" 		{ return EXP; }
+"sqrt" 		{ return SQRT; }
+"atan" 		{ return ATAN; }
+"tan" 		{ return TAN; }
+"pow" 		{ return POW; }
+"log" 		{ return LOG; }
+{symbol} { 
+  yylval=new symbol_ast_vertex;
+  yylval->type=SYMBOL_ASTV;
+  static_cast<symbol_ast_vertex*>(yylval)->sym=new symbol();
+  static_cast<symbol_ast_vertex*>(yylval)->sym->name=yytext;
+  return SYMBOL;			
+}
+{const} {
+  yylval=new const_ast_vertex;
+  yylval->type=CONSTANT_ASTV;
+  static_cast<const_ast_vertex*>(yylval)->value=new symbol();
+  static_cast<const_ast_vertex*>(yylval)->value->name=yytext;
+  return CONSTANT;			
+}
+. 		{ return yytext[0]; }
+
+%%
+
+void lexinit(FILE *source) { yyin=source; }
